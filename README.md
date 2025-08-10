@@ -13,3 +13,9 @@
 [![](https://visitcount.itsvg.in/api?id=Evanurafianti&icon=0&color=0)](https://visitcount.itsvg.in)
 
 <!-- Proudly created with GPRM ( https://gprm.itsvg.in ) -->
+
+## 🎮 Mainkan Pac-Man Saya!
+
+Klik untuk main langsung 👉 [Pac-Man Game](https://evanurafianti.github.io/Evanurafianti/)
+
+![Pac-Man Preview](https://raw.githubusercontent.com/evanurafianti/pacman-game/main/preview.gif)
