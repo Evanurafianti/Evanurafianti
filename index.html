@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Pac‑Man Mini — HTML5 Canvas</title>
+<style>
+  :root{--bg:#000;--wall:#003f7f;--dot:#ffd24d;--pac:#ffde00;--ghost1:#ff4d4d;--ghost2:#4dd2ff;--ghost3:#b86bff}
+  html,body{height:100%;margin:0;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:system-ui,Segoe UI,Roboto}
+  #game{box-shadow:0 8px 30px rgba(0,0,0,.6);border-radius:8px;overflow:hidden;background:#111}
+  canvas{display:block;background:#000}
+  .hud{color:#fff;padding:10px 12px;display:flex;gap:12px;align-items:center}
+  .btns{margin-left:auto}
+  button{background:#222;color:#fff;border:1px solid #444;padding:6px 10px;border-radius:6px;cursor:pointer}
+  @media (max-width:600px){.hud{flex-direction:column;align-items:flex-start}}
+</style>
+</head>
+<body>
+<div id="game">
+  <div class="hud">
+    <div id="score">Score: 0</div>
+    <div id="lives">Lives: 3</div>
+    <div class="btns">
+      <button id="btn-restart">Restart</button>
+      <button id="btn-pause">Pause</button>
+    </div>
+  </div>
+  <canvas id="cv" width="448" height="496"></canvas>
+</div>
+
+<script>
+/*
+  Pac‑Man Mini
+  - Single-file HTML + JS minimal Pacman-like game suitable for hosting on GitHub Pages.
+  - Controls: Arrow keys or WASD
+  - Simple ghost AI (random with bias)
+*/
+
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+const SCALE = 16; // grid cell size
+const COLS = 28; // original pacman grid style
+const ROWS = 31;
+const W = COLS * SCALE;
+const H = ROWS * SCALE;
+canvas.width = W; canvas.height = H;
+
+// Simple map: 0 = empty+dot, 1 = wall, 2 = empty (no dot)
+// We'll build a compact map: using a small template resembling classic board
+const raw = [
+  '1111111111111111111111111111',
+  '1000000000110000000000000001',
+  '1011110110110110110111110101',
+  '1011110110110110110111110101',
+  '1011110110110110110111110101',
+  '1000000000000000000000000001',
+  '1011110111110111110111110101',
+  '1000000100000000000100000001',
+  '1111110110111110110111111111',
+  '0000000010110000110100000000',
+  '1111110110110110110111111111',
+  '1000000000000000000000000001',
+  '1011110111110111110111110101',
+  '1000000100000000000100000001',
+  '1011110110110110110111110101',
+  '1000000000110000000000000001',
+  '1111111111111111111111111111',
+];
+
+// Expand raw vertically to fit ROWS by tiling/mirroring for a playable area (simple)
+const map = [];
+for (let r=0; r<ROWS; r++){
+  const line = raw[r % raw.length];
+  const row = [];
+  for (let c=0;c<COLS;c++){
+    const ch = line[c % line.length] || '1';
+    row.push(ch === '1' ? 1 : 0);
+  }
+  map.push(row);
+}
+
+// Remove dots in center area (ghost house)
+for (let r=13;r<18;r++) for (let c=11;c<17;c++) map[r][c]=2;
+
+// Game state
+let score = 0;
+let lives = 3;
+let paused = false;
+
+const player = {
+  x:14, y:23, // grid pos
+  dir:0, // 0 none, 1 up, 2 right, 3 down, 4 left
+  nextDir:0,
+  speed:6 // cells per second
+};
+
+function toPx(gx, gy){ return {x: gx*SCALE + SCALE/2, y: gy*SCALE + SCALE/2}; }
+
+// Ghosts
+const ghosts = [
+  {x:13,y:11,color:'--ghost1',dir:0,mode:'chase',fr:0},
+  {x:14,y:11,color:'--ghost2',dir:0,mode:'chase',fr:0},
+  {x:15,y:11,color:'--ghost3',dir:0,mode:'chase',fr:0}
+];
+
+// Input
+const keys = {};
+addEventListener('keydown', e=>{ keys[e.key]=true; mapKey(e); e.preventDefault(); });
+addEventListener('keyup', e=>{ keys[e.key]=false; if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d'].includes(e.key)) e.preventDefault(); });
+
+function mapKey(e){
+  if(e.key==='ArrowUp' || e.key==='w') player.nextDir=1;
+  if(e.key==='ArrowRight' || e.key==='d') player.nextDir=2;
+  if(e.key==='ArrowDown' || e.key==='s') player.nextDir=3;
+  if(e.key==='ArrowLeft' || e.key==='a') player.nextDir=4;
+}
+
+// Helpers
+function cellAccessible(r,c){
+  if (r<0||c<0||r>=ROWS||c>=COLS) return false;
+  return map[r][c] !== 1;
+}
+
+function stepDir(r,c,dir){
+  if(dir===1) return {r:r-1,c};
+  if(dir===2) return {r,c:c+1};
+  if(dir===3) return {r:r+1,c};
+  if(dir===4) return {r,c:c-1};
+  return {r,c};
+}
+
+// Movement timing
+let last = performance.now();
+let accPlayer = 0;
+let accGhosts = 0;
+
+function update(dt){
+  if(paused) return;
+  // Player movement
+  accPlayer += dt;
+  const secPerCell = 1 / player.speed; // seconds
+  if(accPlayer >= secPerCell){
+    accPlayer -= secPerCell;
+    // try to turn to nextDir if possible
+    if(player.nextDir){
+      const t = stepDir(player.y, player.x, player.nextDir);
+      if(cellAccessible(t.r,t.c)) player.dir = player.nextDir;
+      player.nextDir = 0;
+    }
+    // move in current dir
+    const tgt = stepDir(player.y, player.x, player.dir);
+    if(cellAccessible(tgt.r,tgt.c)){
+      player.x = tgt.c; player.y = tgt.r;
+      // eat dot if present
+      if(map[player.y][player.x]===0){ map[player.y][player.x]=2; score += 10; updateHUD(); }
+    } else {
+      player.dir = 0;
+    }
+  }
+
+  // Ghost movement slower
+  accGhosts += dt;
+  const gSpeed = 3.0; // cells per second
+  if(accGhosts >= 1/gSpeed){
+    accGhosts -= 1/gSpeed;
+    ghosts.forEach(g=>{
+      // simple AI: try to move towards player but can randomize
+      const options = [];
+      for(let d=1;d<=4;d++){
+        const p = stepDir(g.y,g.x,d);
+        if(cellAccessible(p.r,p.c)) options.push(d);
+      }
+      if(options.length===0) return;
+      // choose best: with bias to closer to player
+      options.sort((a,b)=>{
+        const pa = stepDir(g.y,g.x,a); const pb = stepDir(g.y,g.x,b);
+        const da = Math.hypot(pa.r-player.y, pa.c-player.x);
+        const db = Math.hypot(pb.r-player.y, pb.c-player.x);
+        // add some randomness
+        return (da - db) + (Math.random()-0.5);
+      });
+      g.dir = options[0];
+      const np = stepDir(g.y,g.x,g.dir);
+      g.x = np.c; g.y = np.r;
+
+      // collision with player?
+      if(g.x===player.x && g.y===player.y){
+        loseLife();
+      }
+    });
+  }
+}
+
+function loseLife(){
+  lives -= 1; updateHUD();
+  if(lives<=0){ resetAll(); }
+  else { // respawn
+    player.x=14; player.y=23; player.dir=0; player.nextDir=0;
+    ghosts[0].x=13; ghosts[0].y=11;
+    ghosts[1].x=14; ghosts[1].y=11;
+    ghosts[2].x=15; ghosts[2].y=11;
+  }
+}
+
+function resetAll(){
+  score = 0; lives = 3; updateHUD();
+  // reset dots
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(map[r][c]!==1 && !(r>=13 && r<18 && c>=11 && c<17)) map[r][c]=0;
+  player.x=14; player.y=23; player.dir=0; player.nextDir=0;
+}
+
+function updateHUD(){
+  document.getElementById('score').textContent = 'Score: '+score;
+  document.getElementById('lives').textContent = 'Lives: '+lives;
+}
+
+function draw(){
+  // background
+  ctx.clearRect(0,0,W,H);
+  // draw grid
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const cell = map[r][c];
+      const x = c*SCALE; const y = r*SCALE;
+      if(cell===1){ // wall
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--wall') || '#003f7f';
+        ctx.fillRect(x,y,SCALE,SCALE);
+      } else {
+        // dot
+        if(cell===0){
+          ctx.beginPath(); ctx.arc(x+SCALE/2,y+SCALE/2,2,0,Math.PI*2); ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--dot') || '#ffd24d'; ctx.fill();
+        }
+      }
+    }
+  }
+  // draw player (Pac-Man)
+  const ppos = toPx(player.x, player.y);
+  ctx.beginPath();
+  const mouth = 0.25 + 0.25*Math.sin(performance.now()/120);
+  let ang0 = 0 - mouth*Math.PI;
+  let ang1 = Math.PI*2 + mouth*Math.PI;
+  // rotate mouth with direction
+  ctx.save(); ctx.translate(ppos.x, ppos.y);
+  if(player.dir===1) ctx.rotate(-Math.PI/2);
+  if(player.dir===2) ctx.rotate(0);
+  if(player.dir===3) ctx.rotate(Math.PI/2);
+  if(player.dir===4) ctx.rotate(Math.PI);
+  ctx.moveTo(0,0);
+  ctx.arc(0,0,SCALE/2,ang0,ang1);
+  ctx.closePath(); ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--pac') || '#ffde00'; ctx.fill();
+  ctx.restore();
+
+  // draw ghosts
+  ghosts.forEach((g,i)=>{
+    const gpos = toPx(g.x,g.y);
+    ctx.save(); ctx.translate(gpos.x,gpos.y);
+    // body
+    const colorVar = getComputedStyle(document.documentElement).getPropertyValue(g.color) || (i===0? '#ff4d4d' : (i===1? '#4dd2ff' : '#b86bff'));
+    ctx.fillStyle = colorVar;
+    ctx.beginPath(); ctx.arc(0, -SCALE*0.12, SCALE*0.42, Math.PI, 0); ctx.lineTo(SCALE*0.42, SCALE*0.42); // head + right
+    // scallops
+    const s = 5; for(let k=0;k<s;k++){ const cx = -SCALE*0.42 + (k)*(SCALE*0.84/(s-1)); ctx.arc(cx, SCALE*0.42, SCALE*0.12, 0, Math.PI); }
+    ctx.closePath(); ctx.fill();
+    // eyes
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(-4,-2,4,6,0,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.ellipse(4,-2,4,6,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(-4,0,2,0,Math.PI*2); ctx.arc(4,0,2,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+}
+
+function loop(t){
+  const dt = (t - last) / 1000; last = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// UI
+document.getElementById('btn-restart').onclick = ()=>{ resetAll(); };
+document.getElementById('btn-pause').onclick = ()=>{ paused = !paused; document.getElementById('btn-pause').textContent = paused? 'Resume':'Pause'; };
+
+// start
+resetAll(); updateHUD(); last = performance.now(); requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
